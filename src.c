@@ -281,36 +281,148 @@ void load_chain() {
 // 提示：1. malloc分配 MinerNode 2. 赋值 name/privkey 3. 用 calc_sha256 算 pubkey 4. 插入 g_miner_head
 // 协同：完成后调用 add_contact_manual 同步到地址簿，调用 save_miners 保存。
 void add_miner(const char* name, const char* privkey) {
-    // TODO: 请实现代码
-    // 伪代码:
-    // node = malloc...
-    // strcpy...
-    // calc_sha256(privkey, node->pubkey)
-    // node->next = g_miner_head; g_miner_head = node;
-    // ...
+     // 参数合法性检查
+    if (!name || !privkey) {
+        printf(" 错误：矿工名称或私钥不能为空！\n");
+        return;
+    }
+    
+    // 1. malloc分配新的矿工节点
+    MinerNode* node = (MinerNode*)malloc(sizeof(MinerNode));
+    if (!node) {
+        printf(" 错误：内存分配失败，无法添加矿工！\n");
+        return;
+    }
+    
+    // 2. 清零并初始化节点数据
+    memset(node, 0, sizeof(MinerNode));  // 防止残留数据
+    
+    // 安全复制名称（防止缓冲区溢出）
+    strncpy(node->name, name, sizeof(node->name) - 1);  // 留1字节给'\0'
+    node->name[sizeof(node->name) - 1] = '\0';
+    
+    // 3. 用 calc_sha256 计算公钥哈希（从私钥生成）
+    // 注意：pubkey[65] 需容纳64位哈希字符 + 终止符
+    calc_sha256(privkey, node->pubkey);
+    
+    // 4. 头插法插入链表（核心：两步操作）
+    node->next = g_miner_head;  // 新节点指向原头节点
+    g_miner_head = node;        // 头指针前移
+    
+    // 5. 协同操作
+    add_contact_manual(name, node->pubkey);  // 同步到地址簿
+    save_miners();  // 持久化到磁盘
+    
+    printf(" 成功：矿工 '%s' 已入职（公钥: %.8s...）\n", name, node->pubkey);
 }
 
 // A2: 删除矿工 (链表删除)
 // 提示：遍历链表找到名字匹配的节点，将其移出并 free。注意处理头节点删除的情况。
 void delete_miner(const char* name) {
-    // TODO: 请实现代码
-    // 伪代码:
-    // curr = g_miner_head; prev = NULL;
-    // while(curr) {
-    //    if match:
-    //       if prev == NULL: g_miner_head = curr->next;
-    //       else: prev->next = curr->next;
-    //       free(curr); save_miners(); return;
-    //    prev = curr; curr = curr->next;
-    // }
+    // 参数检查
+    if (!name) {
+        printf(" 错误：矿工名称不能为空！\n");
+        return;
+    }
+    
+    if (!g_miner_head) {
+        printf(" 错误：当前矿工列表为空！\n");
+        return;
+    }
+    
+    // 遍历查找目标节点
+    MinerNode* curr = g_miner_head;
+    MinerNode* prev = NULL;
+    
+    while (curr) {
+        if (strcmp(curr->name, name) == 0) {
+            // 找到匹配节点，分情况删除
+            
+            // 情况1：删除头节点（prev为NULL）
+            if (!prev) {
+                g_miner_head = curr->next;  // 头指针跳过后移
+            } 
+            // 情况2：删除中间/尾节点
+            else {
+                prev->next = curr->next;  // 前驱节点绕过当前节点
+            }
+            
+            // 释放节点内存
+            free(curr);
+            curr = NULL;  // 好习惯：防止野指针
+            
+            // 持久化更改
+            save_miners();
+            
+            printf(" 成功：矿工 '%s' 已离职\n", name);
+            return;  // 删除成功立即退出
+        }
+        
+        // 节点不匹配，继续向后遍历
+        prev = curr;
+        curr = curr->next;
+    }
+    
+    // 遍历完仍未找到
+    printf(" 错误：未找到矿工 '%s'\n", name);
 }
 
 // [A-加分项] 矿工排序 (Bonus)
 // 提示：对 g_miner_head 链表按余额(需调用 get_balance)进行排序。
 void sort_miners_by_balance() {
-    // TODO: 选做
+     if (!g_miner_head || !g_miner_head->next) {
+        printf(" 提示：矿工数量不足2人，无需排序\n");
+        return;
+    }
+    
+    // 使用冒泡排序（链表版）- 适合教学，逻辑清晰
+    int swapped;  // 交换标志
+    MinerNode* lptr;  // 左指针
+    MinerNode* rptr = NULL;  // 右边界（指向已排序部分）
+    
+    do {
+        swapped = 0;
+        lptr = g_miner_head;
+        
+        // 遍历未排序部分，相邻节点比较
+        while (lptr->next != rptr) {
+            MinerNode* next_node = lptr->next;
+            
+            // 获取两矿工余额（调用模块B函数）
+            long balance1 = get_balance(lptr->pubkey);
+            long balance2 = get_balance(next_node->pubkey);
+            
+            // 降序排列：若前节点余额 < 后节点余额，则交换
+            if (balance1 < balance2) {
+                // 交换节点数据（而非指针），更安全且无需断链重连
+                
+                char temp_name[sizeof(lptr->name)];
+                char temp_pubkey[sizeof(lptr->pubkey)];
+                
+                // 备份左节点数据
+                memcpy(temp_name, lptr->name, sizeof(temp_name));
+                memcpy(temp_pubkey, lptr->pubkey, sizeof(temp_pubkey));
+                
+                // 左节点接收右节点数据
+                memcpy(lptr->name, next_node->name, sizeof(lptr->name));
+                memcpy(lptr->pubkey, next_node->pubkey, sizeof(lptr->pubkey));
+                
+                // 右节点接收备份数据
+                memcpy(next_node->name, temp_name, sizeof(next_node->name));
+                memcpy(next_node->pubkey, temp_pubkey, sizeof(next_node->pubkey));
+                
+                swapped = 1;  // 标记已交换
+            }
+            
+            lptr = lptr->next;  // 继续下一对
+        }
+        
+        rptr = lptr;  // 本轮结束，右边界前移
+        
+    } while (swapped);  // 直到无交换为止
+    
+    printf(" 成功：矿工已按余额降序排列\n");
 }
-
 
 
 /* * 【MODULE B: 审计与查询】---董毅
@@ -758,4 +870,5 @@ int main() {
         }
     }
     return 0;
+
 }
